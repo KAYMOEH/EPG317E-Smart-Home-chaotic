@@ -1,1 +1,309 @@
+/*
+ * EPG317E Capstone Project
+ * Embedded Systems Specialist: Mbalenhle Mahlangu
+ * 
+ * Tasks completed:
+ * 1. Pin mapping: Original Arduino → ESP32 GPIOs 
+ * 2. Gas alarm logic: MQ-2 warm-up (90 sec) + buzzer alert
+ * 3. PIR motion sensor: Triggers White LED (GPIO 13) + sends MQTT status
+ * 
+ * MQTT Topics (per team document):
+ * - Publish: epg317e/home/<team_id>/sensors/light, gas, motion, rain
+ * - Subscribe: epg317e/home/<team_id>/control/door, window, fan, led_yellow
+ */
 
+#include <WiFi.h>
+#include <PubSubClient.h>
+
+// ==================== WiFi & MQTT ====================
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+const char* mqtt_server = "broker.hivemq.com";  // or your EMQX broker
+const char* team_id = "team01";  // CHANGE THIS to your actual team ID
+
+// ==================== Pin Mapping (ESP32 GPIOs) ====================
+// Outputs
+#define WHITE_LED       13   // Outside LED (PIR trigger)
+#define YELLOW_LED      12   // PWM dimmable
+#define RELAY           14
+#define BUZZER          19
+#define FAN_INA         32
+#define FAN_INB         23
+#define SERVO_DOOR      15
+#define SERVO_WINDOW    18
+
+// Sensors
+#define LIGHT_SENSOR    33   // Photocell (Analog)
+#define STEAM_SENSOR    25   // Rain (Analog)
+#define GAS_SENSOR      26   // MQ-2 (Analog)
+#define PIR_SENSOR      27   // Motion (Digital)
+
+// I2C
+#define I2C_SDA         21
+#define I2C_SCL         22
+
+// ==================== MQTT Topics ====================
+const char* topic_light = "epg317e/home/";
+const char* topic_gas   = "epg317e/home/";
+const char* topic_motion= "epg317e/home/";
+const char* topic_rain  = "epg317e/home/";
+
+const char* topic_door   = "epg317e/home/";
+const char* topic_window = "epg317e/home/";
+const char* topic_fan    = "epg317e/home/";
+const char* topic_led    = "epg317e/home/";
+
+// Full topic strings
+String full_topic_light, full_topic_gas, full_topic_motion, full_topic_rain;
+String full_topic_door, full_topic_window, full_topic_fan, full_topic_led;
+
+// ==================== Global Objects ====================
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// ==================== Gas Alarm Variables ====================
+unsigned long gasWarmupStart = 0;
+const unsigned long GAS_WARMUP_MS = 90000;  // 90 seconds
+bool gasWarmupComplete = false;
+const int GAS_ALARM_THRESHOLD = 500;  // Adjust after testing
+
+// ==================== PIR Motion Variables ====================
+bool lastMotionState = false;
+unsigned long lastMotionDebounce = 0;
+const unsigned long DEBOUNCE_DELAY = 500;
+
+// ==================== Timing ====================
+unsigned long lastPublishTime = 0;
+const unsigned long PUBLISH_INTERVAL = 5000;  // 5 seconds
+
+// ==================== Function Prototypes ====================
+void setupWiFi();
+void reconnectMQTT();
+void callback(char* topic, byte* payload, unsigned int length);
+void readSensorsAndPublish();
+void checkGasAlarm(int gasValue);
+void handlePIR();
+void buildTopics();
+
+// ============================= SETUP =============================
+void setup() {
+  Serial.begin(115200);
+  
+  // Build full MQTT topic strings
+  buildTopics();
+  
+  // Pin modes
+  pinMode(WHITE_LED, OUTPUT);
+  pinMode(YELLOW_LED, OUTPUT);
+  pinMode(RELAY, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
+  pinMode(FAN_INA, OUTPUT);
+  pinMode(FAN_INB, OUTPUT);
+  pinMode(PIR_SENSOR, INPUT);
+  
+  // Initial states
+  digitalWrite(WHITE_LED, LOW);
+  digitalWrite(YELLOW_LED, LOW);
+  digitalWrite(BUZZER, LOW);
+  digitalWrite(RELAY, LOW);
+  digitalWrite(FAN_INA, LOW);
+  digitalWrite(FAN_INB, LOW);
+  
+  // Start WiFi & MQTT
+  setupWiFi();
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
+  
+  // Start gas warm-up timer
+  gasWarmupStart = millis();
+  Serial.println("MQ-2 gas sensor warm-up started (90 seconds) – alarms disabled.");
+}
+
+// ============================= MAIN LOOP =============================
+void loop() {
+  if (!client.connected()) {
+    reconnectMQTT();
+  }
+  client.loop();
+  
+  // Check gas warm-up completion
+  if (!gasWarmupComplete && (millis() - gasWarmupStart >= GAS_WARMUP_MS)) {
+    gasWarmupComplete = true;
+    Serial.println("Gas sensor warm-up complete. Alarm active now.");
+  }
+  
+  // Task 2: Gas alarm logic
+  int gasValue = analogRead(GAS_SENSOR);
+  if (gasWarmupComplete) {
+    checkGasAlarm(gasValue);
+  } else {
+    digitalWrite(BUZZER, LOW);
+  }
+  
+  // Task 3: PIR motion + White LED + MQTT status
+  handlePIR();
+  
+  // Publish all sensor data every 5 seconds
+  if (millis() - lastPublishTime >= PUBLISH_INTERVAL) {
+    readSensorsAndPublish();
+    lastPublishTime = millis();
+  }
+}
+
+// ============================= BUILD TOPICS =============================
+void buildTopics() {
+  full_topic_light = String(topic_light) + team_id + "/sensors/light";
+  full_topic_gas   = String(topic_gas)   + team_id + "/sensors/gas";
+  full_topic_motion= String(topic_motion)+ team_id + "/sensors/motion";
+  full_topic_rain  = String(topic_rain)  + team_id + "/sensors/rain";
+  
+  full_topic_door   = String(topic_door)   + team_id + "/control/door";
+  full_topic_window = String(topic_window) + team_id + "/control/window";
+  full_topic_fan    = String(topic_fan)    + team_id + "/control/fan";
+  full_topic_led    = String(topic_led)    + team_id + "/control/led_yellow";
+}
+
+// ============================= WIFI SETUP =============================
+void setupWiFi() {
+  delay(10);
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected. IP: ");
+  Serial.println(WiFi.localIP());
+}
+
+// ============================= MQTT RECONNECT =============================
+void reconnectMQTT() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    String clientId = "ESP32_Team_" + String(team_id);
+    if (client.connect(clientId.c_str())) {
+      Serial.println("connected");
+      // Subscribe to control topics
+      client.subscribe(full_topic_door.c_str());
+      client.subscribe(full_topic_window.c_str());
+      client.subscribe(full_topic_fan.c_str());
+      client.subscribe(full_topic_led.c_str());
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      delay(5000);
+    }
+  }
+}
+
+// ============================= MQTT CALLBACK =============================
+void callback(char* topic, byte* payload, unsigned int length) {
+  String message;
+  for (unsigned int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  
+  String receivedTopic = String(topic);
+  
+  if (receivedTopic == full_topic_door) {
+    Serial.println("Door command: " + message);
+    // Kamogelo will implement servo control
+  }
+  else if (receivedTopic == full_topic_window) {
+    Serial.println("Window command: " + message);
+  }
+  else if (receivedTopic == full_topic_fan) {
+    if (message == "ON") {
+      digitalWrite(FAN_INA, HIGH);
+      digitalWrite(FAN_INB, LOW);
+      Serial.println("Fan ON");
+    } else if (message == "OFF") {
+      digitalWrite(FAN_INA, LOW);
+      digitalWrite(FAN_INB, LOW);
+      Serial.println("Fan OFF");
+    }
+  }
+  else if (receivedTopic == full_topic_led) {
+    // PWM dimming for Yellow LED (0-255)
+    int brightness = message.toInt();
+    if (brightness >= 0 && brightness <= 255) {
+      ledcWrite(0, brightness);  // Using LEDC channel 0
+      Serial.print("Yellow LED brightness: ");
+      Serial.println(brightness);
+    }
+  }
+}
+
+// ==================== TASK 2: GAS ALARM LOGIC ====================
+void checkGasAlarm(int gasValue) {
+  if (gasValue > GAS_ALARM_THRESHOLD) {
+    // Buzzer pattern: 2.5 kHz for 200ms, pause 100ms
+    tone(BUZZER, 2500, 200);
+    delay(100);
+    tone(BUZZER, 2500, 200);
+    Serial.println("!!! GAS ALARM !!! Value: " + String(gasValue));
+  } else {
+    digitalWrite(BUZZER, LOW);
+  }
+}
+
+// ==================== TASK 3: PIR MOTION + WHITE LED + MQTT ====================
+void handlePIR() {
+  bool motion = digitalRead(PIR_SENSOR);
+  
+  // Debounce
+  if (motion != lastMotionState) {
+    lastMotionDebounce = millis();
+  }
+  
+  if ((millis() - lastMotionDebounce) > DEBOUNCE_DELAY) {
+    if (motion && !lastMotionState) {
+      // Motion detected
+      digitalWrite(WHITE_LED, HIGH);
+      client.publish(full_topic_motion.c_str(), "1");
+      Serial.println("Motion Detected - White LED ON");
+    }
+    else if (!motion && lastMotionState) {
+      // No motion
+      digitalWrite(WHITE_LED, LOW);
+      client.publish(full_topic_motion.c_str(), "0");
+      Serial.println("No Motion - White LED OFF");
+    }
+    lastMotionState = motion;
+  }
+}
+
+// ==================== READ & PUBLISH ALL SENSORS ====================
+void readSensorsAndPublish() {
+  int lightRaw = analogRead(LIGHT_SENSOR);
+  int steamRaw = analogRead(STEAM_SENSOR);
+  int gasRaw = analogRead(GAS_SENSOR);
+  
+  // Convert to percentages (0-4095 → 0-100)
+  int lightPercent = map(lightRaw, 0, 4095, 0, 100);
+  int steamPercent = map(steamRaw, 0, 4095, 0, 100);
+  
+  // Publish to MQTT
+  client.publish(full_topic_light.c_str(), String(lightPercent).c_str());
+  client.publish(full_topic_rain.c_str(),  String(steamPercent).c_str());
+  client.publish(full_topic_gas.c_str(),   String(gasRaw).c_str());
+  
+  // Motion status is already published in handlePIR()
+  
+  Serial.print("Light: "); Serial.print(lightPercent); Serial.print("% | ");
+  Serial.print("Rain: ");  Serial.print(steamPercent); Serial.print("% | ");
+  Serial.print("Gas: ");   Serial.println(gasRaw);
+}
+
+// ==================== LEDC SETUP FOR PWM (Yellow LED) ====================
+void setup() {
+  // ... (existing setup code above)
+  
+  // Add this line for PWM on Yellow LED (GPIO 12)
+  ledcSetup(0, 5000, 8);   // channel 0, 5 kHz, 8-bit resolution
+  ledcAttachPin(YELLOW_LED, 0);
+  
+  // ... rest of setup
+}
