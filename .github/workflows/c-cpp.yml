@@ -1,0 +1,138 @@
+#include "crow_all.h"
+
+#include <iostream>
+#include <string>
+
+/*
+    Smart Home Control Dashboard (C++ Version)
+
+    Features:
+    - LED brightness control
+    - Relay ON/OFF control
+    - Fan toggle control
+*/
+
+// Structure to store device states
+struct DeviceState {
+    int led;
+    bool relay;
+    bool fan;
+};
+
+// Global device state initialization
+DeviceState device_state = {0, false, false};
+
+int main() {
+    // Create Crow application
+    crow::SimpleApp app;
+
+    /*
+        Home Route
+    */
+    CROW_ROUTE(app, "/")([]() {
+        return "Smart Home Dashboard Running";
+    });
+
+    /*
+        LED Brightness Route
+    */
+    CROW_ROUTE(app, "/set-led")
+        .methods(crow::HTTPMethod::Post)(
+            [](const crow::request& req) {
+
+                crow::query_string params(req.body);
+
+                const char* value = params.get("value");
+
+                if (value == nullptr) {
+                    crow::json::wvalue response;
+
+                    response["success"] = false;
+                    response["error"] = "Invalid value";
+
+                    return crow::response(400, response);
+                }
+
+                device_state.led = std::stoi(value);
+
+                std::cout
+                    << "LED brightness set to "
+                    << device_state.led
+                    << std::endl;
+
+                crow::json::wvalue response;
+
+                response["success"] = true;
+
+                return crow::response(response);
+            });
+
+    /*
+        Relay Control Route
+    */
+    CROW_ROUTE(app, "/set-relay")
+        .methods(crow::HTTPMethod::Post)(
+            [](const crow::request& req) {
+
+                crow::query_string params(req.body);
+
+                const char* status = params.get("status");
+
+                if (status != nullptr) {
+                    std::string status_str(status);
+
+                    device_state.relay =
+                        (status_str == "true");
+                }
+
+                std::cout
+                    << "Relay "
+                    << (device_state.relay ? "ON" : "OFF")
+                    << std::endl;
+
+                crow::json::wvalue response;
+
+                response["success"] = true;
+
+                return crow::response(response);
+            });
+
+    /*
+        Fan Control Route
+    */
+    CROW_ROUTE(app, "/set-fan")
+        .methods(crow::HTTPMethod::Post)(
+            [](const crow::request& req) {
+
+                crow::query_string params(req.body);
+
+                const char* status = params.get("status");
+
+                if (status != nullptr) {
+                    std::string status_str(status);
+
+                    device_state.fan =
+                        (status_str == "true");
+                }
+
+                std::cout
+                    << "Fan "
+                    << (device_state.fan ? "ON" : "OFF")
+                    << std::endl;
+
+                crow::json::wvalue response;
+
+                response["success"] = true;
+
+                return crow::response(response);
+            });
+
+    /*
+        Run Server
+    */
+    app.port(5000)
+        .multithreaded()
+        .run();
+
+    return 0;
+}
