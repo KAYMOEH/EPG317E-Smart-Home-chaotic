@@ -1,0 +1,5 @@
+panel==1.4.5
+pandas==2.2.2
+hvplot==0.10.0
+paho-mqtt==2.1.0
+bokeh==3.4.2
