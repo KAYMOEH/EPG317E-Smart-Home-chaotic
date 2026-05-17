@@ -1,4 +1,3 @@
-To remove the citations, you essentially need a "clean" version of your structured project manual. I have updated the document below to reflect the current team (excluding Ntsikelelo Mvambo), the hardware remapping, and the cloud-first architecture while maintaining a professional, readable format.
 
 ---
 
@@ -10,7 +9,7 @@ To remove the citations, you essentially need a "clean" version of your structur
 
 Our team has engineered a real-time IoT Smart Home ecosystem using an **ESP32 microcontroller** and the Keyestudio KS0085 kit. The system operates as a **cloud-deployed application**, bridging the gap between local sensor data and a globally reachable web interface. By deploying to a remote, always-available environment, we ensure the system is reachable on a public URL rather than just a local machine.
 
-**Live Dashboard:** [[text](https://huggingface.co/spaces/Kaymoeh/iot-smart-home-dashboard)]
+**Live Dashboard:** [https://huggingface.co/spaces/Kaymoeh/iot-smart-home-dashboard]
 
 ## 2. The Team
 
@@ -63,7 +62,7 @@ We follow an industry-standard **Feature Branch + Pull Request** workflow:
 
 ## 7. Setup & Installation
 
-1. **Clone:** `git clone [[repository-url](https://github.com/KAYMOEH/EPG317E-Smart-Home-chaotic.git)]`.
+1. **Clone:** `git clone [https://github.com/KAYMOEH/EPG317E-Smart-Home-chaotic.git]`.
 2. **Environment:** `python -m venv venv` and `source venv/bin/activate`.
 3. **Dependencies:** `pip install -r requirements.txt`.
 4. **Database:** Run `python web_app/database.py` to initialize the SQLite schema.
